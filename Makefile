@@ -49,6 +49,26 @@ CFLAGS_ALL = $(CFLAGS_C99FSE)
 CFLAGS_ALL += -D_XOPEN_SOURCE=700 -I$(srcdir)/arch/$(ARCH) -I$(srcdir)/arch/generic -Iobj/src/internal -I$(srcdir)/src/include -I$(srcdir)/src/internal -Iobj/include -I$(srcdir)/include
 CFLAGS_ALL += $(CPPFLAGS) $(CFLAGS_AUTO) $(CFLAGS)
 
+ifeq ($(LINUXCACHE),1)
+CFLAGS_ALL += -DUSE_LINUXCACHE
+endif
+
+ifeq ($(INTERNALPROFILE),1)
+CFLAGS_ALL += -DINTERNAL_PROFILE
+endif
+
+ifeq ($(CDF),1)
+CFLAGS_ALL += -DINTERNAL_PROFILE -DCDF
+endif
+
+ifneq ($(ENTRY_SIZE_K),)
+CFLAGS_ALL += -DNVCACHE_ENTRY_SIZE_K=$(ENTRY_SIZE_K) 
+endif
+
+ifneq ($(RAM_PAGE_SIZE_K),)
+CFLAGS_ALL += -DNVCACHE_RAM_PAGE_SIZE_K=$(RAM_PAGE_SIZE_K) 
+endif
+
 LDFLAGS_ALL = $(LDFLAGS_AUTO) $(LDFLAGS)
 
 AR      = $(CROSS_COMPILE)ar

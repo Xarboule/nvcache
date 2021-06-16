@@ -460,6 +460,18 @@ int eaccess(const char *, int);
 #define _CS_V6_ENV	1148
 #define _CS_V7_ENV	1149
 
+/****************************************************************************/
+/*                       NVCACHE ADDITIONS                                  */
+/****************************************************************************/
+int musl_close(int);
+off_t musl_lseek(int, off_t, int);
+ssize_t musl_read(int, void *, size_t);
+ssize_t musl_write(int, const void *, size_t);
+ssize_t musl_pread(int, void *, size_t, off_t);
+ssize_t musl_pwrite(int, const void *, size_t, off_t);
+int musl_fsync(int);
+/****************************************************************************/
+
 #ifdef __cplusplus
 }
 #endif

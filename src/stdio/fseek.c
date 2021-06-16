@@ -24,6 +24,7 @@ int __fseeko_unlocked(FILE *f, off_t off, int whence)
 	return 0;
 }
 
+#include "../nvlogcache/nvcache_musl_wrapp.h"
 int __fseeko(FILE *f, off_t off, int whence)
 {
 	int result;

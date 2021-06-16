@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include "syscall.h"
+#include "../nvlogcache/nvcache_musl_wrapp.h"
 
 static int dummy(int fd)
 {
@@ -10,6 +11,15 @@ static int dummy(int fd)
 weak_alias(dummy, __aio_close);
 
 int close(int fd)
+{
+#ifdef NVCACHE_BYPASS
+    return musl_close(fd);
+#else
+    return nvcache_close(fd);
+#endif
+}
+
+int musl_close(int fd)
 {
 	fd = __aio_close(fd);
 	int r = __syscall_cp(SYS_close, fd);

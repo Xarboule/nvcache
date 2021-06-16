@@ -3,6 +3,9 @@
 *.a
 *.so
 *.so.1
+*.swp
+*.swo
+*.swn
 config.mak
 lib/musl-gcc.specs
 /obj/

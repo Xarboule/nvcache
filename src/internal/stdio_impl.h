@@ -111,4 +111,12 @@ hidden void __getopt_msg(const char *, const char *, const char *, size_t);
 hidden FILE *__fopen_rb_ca(const char *, FILE *, unsigned char *, size_t);
 hidden int __fclose_ca(FILE *);
 
+/****************************************************************************/
+/*                       NVCACHE ADDITIONS                                  */
+/****************************************************************************/
+hidden size_t __musl_stdio_read(FILE *, unsigned char *, size_t);
+hidden size_t __musl_stdio_write(FILE *, const unsigned char *, size_t);
+/****************************************************************************/
+
+
 #endif

@@ -2,8 +2,20 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "syscall.h"
+#include "../nvlogcache/nvcache_musl_wrapp.h"
 
 int fstat(int fd, struct stat *st)
+{
+    int ret;
+#ifndef NVCACHE_BYPASS
+    ret = nvcache_fstat(fd, st);
+#else
+    ret = musl_fstat(fd, st);
+#endif
+    return ret;
+}
+
+int musl_fstat(int fd, struct stat *st)
 {
 	int ret = __syscall(SYS_fstat, fd, st);
 	if (ret != -EBADF || __syscall(SYS_fcntl, fd, F_GETFD) < 0)

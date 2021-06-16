@@ -14,7 +14,8 @@ extern "C" {
 #define L_XTND 2
 
 int flock(int, int);
-
+int musl_flock(int, int);
+  
 #ifdef __cplusplus
 }
 #endif

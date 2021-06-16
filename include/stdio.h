@@ -215,6 +215,12 @@ FILE *fopencookie(void *, const char *, cookie_io_functions_t);
 #define off64_t off_t
 #endif
 
+/****************************************************************************/
+/*                       NVCACHE ADDITIONS                                  */
+/****************************************************************************/
+FILE *musl_fopen(const char *restrict filename, const char *restrict mode);
+/****************************************************************************/
+
 #ifdef __cplusplus
 }
 #endif

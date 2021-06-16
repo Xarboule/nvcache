@@ -1,7 +1,17 @@
 #include "stdio_impl.h"
 #include <sys/uio.h>
+#include "../nvlogcache/nvcache_musl_wrapp.h"
 
 size_t __stdio_read(FILE *f, unsigned char *buf, size_t len)
+{
+#ifdef NVCACHE_BYPASS
+    return __musl_stdio_read(f,buf,len);
+#else
+    return nvcache_fread(f,buf,len);
+#endif
+}
+
+size_t __musl_stdio_read(FILE *f, unsigned char *buf, size_t len)
 {
 	struct iovec iov[2] = {
 		{ .iov_base = buf, .iov_len = len - !!f->buf_size },

@@ -71,7 +71,9 @@ extern "C" {
 #define UTIME_OMIT 0x3ffffffe
 
 int stat(const char *__restrict, struct stat *__restrict);
+int musl_stat(const char *__restrict, struct stat *__restrict);
 int fstat(int, struct stat *);
+int musl_fstat(int, struct stat *);
 int lstat(const char *__restrict, struct stat *__restrict);
 int fstatat(int, const char *__restrict, struct stat *__restrict, int);
 int chmod(const char *, mode_t);
