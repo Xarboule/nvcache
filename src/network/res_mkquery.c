@@ -13,6 +13,7 @@ int __res_mkquery(int op, const char *dname, int class, int type,
 	int n;
 
 	if (l && dname[l-1]=='.') l--;
+	if (l && dname[l-1]=='.') return -1;
 	n = 17+l+!!l;
 	if (l>253 || buflen<n || op>15u || class>255u || type>255u)
 		return -1;
@@ -20,6 +21,7 @@ int __res_mkquery(int op, const char *dname, int class, int type,
 	/* Construct query template - ID will be filled later */
 	memset(q, 0, n);
 	q[2] = op*8 + 1;
+	q[3] = 32; /* AD */
 	q[5] = 1;
 	memcpy((char *)q+13, dname, l);
 	for (i=13; q[i]; i=j+1) {

@@ -29,5 +29,3 @@ int musl_open(const char *filename, int flags, mode_t mode)
 
 	return __syscall_ret(fd);
 }
-
-weak_alias(open, open64);

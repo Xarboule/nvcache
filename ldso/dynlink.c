@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include <stdio.h>
+#define SYSCALL_NO_TLS 1
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -20,11 +20,18 @@
 #include <semaphore.h>
 #include <sys/membarrier.h>
 #include "pthread_impl.h"
+#include "fork_impl.h"
 #include "libc.h"
 #include "dynlink.h"
-#include "malloc_impl.h"
 
-static void error(const char *, ...);
+#define malloc __libc_malloc
+#define calloc __libc_calloc
+#define realloc __libc_realloc
+#define free __libc_free
+
+static void error_impl(const char *, ...);
+static void error_noop(const char *, ...);
+static void (*error)(const char *, ...) = error_noop;
 
 #define MAXP2(a,b) (-(-(a)&-(b)))
 #define ALIGN(x,y) ((x)+(y)-1 & -(y))
@@ -78,14 +85,13 @@ struct dso {
 	struct dso **deps, *needed_by;
 	size_t ndeps_direct;
 	size_t next_dep;
-	int ctor_visitor;
+	pthread_t ctor_visitor;
 	char *rpath_orig, *rpath;
 	struct tls_module tls;
 	size_t tls_id;
 	size_t relro_start, relro_end;
 	uintptr_t *new_dtv;
 	unsigned char *new_tls;
-	volatile int new_dtv_idx, new_tls_idx;
 	struct td_index *td_index;
 	struct dso *fini_next;
 	char *shortname;
@@ -106,6 +112,8 @@ struct symdef {
 	Sym *sym;
 	struct dso *dso;
 };
+
+typedef void (*stage3_func)(size_t *, size_t *);
 
 static struct builtin_tls {
 	char c;
@@ -183,8 +191,14 @@ static void *laddr_pg(const struct dso *p, size_t v)
 	}
 	return (void *)(v - p->loadmap->segs[j].p_vaddr + p->loadmap->segs[j].addr);
 }
-#define fpaddr(p, v) ((void (*)())&(struct funcdesc){ \
-	laddr(p, v), (p)->got })
+static void (*fdbarrier(void *p))()
+{
+	void (*fd)();
+	__asm__("" : "=r"(fd) : "0"(p));
+	return fd;
+}
+#define fpaddr(p, v) fdbarrier((&(struct funcdesc){ \
+	laddr(p, v), (p)->got }))
 #else
 #define laddr(p, v) (void *)((p)->base + (v))
 #define laddr_pg(p, v) laddr(p, v)
@@ -196,7 +210,8 @@ static void decode_vec(size_t *v, size_t *a, size_t cnt)
 	size_t i;
 	for (i=0; i<cnt; i++) a[i] = 0;
 	for (; v[0]; v+=2) if (v[0]-1<cnt-1) {
-		a[0] |= 1UL<<v[0];
+		if (v[0] < 8*sizeof(long))
+			a[0] |= 1UL<<v[0];
 		a[v[0]] = v[1];
 	}
 }
@@ -283,12 +298,16 @@ static Sym *gnu_lookup_filtered(uint32_t h1, uint32_t *hashtab, struct dso *dso,
 #define ARCH_SYM_REJECT_UND(s) 0
 #endif
 
-static struct symdef find_sym(struct dso *dso, const char *s, int need_def)
+#if defined(__GNUC__)
+__attribute__((always_inline))
+#endif
+static inline struct symdef find_sym2(struct dso *dso, const char *s, int need_def, int use_deps)
 {
 	uint32_t h = 0, gh = gnu_hash(s), gho = gh / (8*sizeof(size_t)), *ght;
 	size_t ghm = 1ul << gh % (8*sizeof(size_t));
 	struct symdef def = {0};
-	for (; dso; dso=dso->syms_next) {
+	struct dso **deps = use_deps ? dso->deps : 0;
+	for (; dso; dso=use_deps ? *deps++ : dso->syms_next) {
 		Sym *sym;
 		if ((ght = dso->ghashtab)) {
 			sym = gnu_lookup_filtered(gh, ght, dso, s, gho, ghm);
@@ -311,6 +330,44 @@ static struct symdef find_sym(struct dso *dso, const char *s, int need_def)
 		break;
 	}
 	return def;
+}
+
+static struct symdef find_sym(struct dso *dso, const char *s, int need_def)
+{
+	return find_sym2(dso, s, need_def, 0);
+}
+
+static struct symdef get_lfs64(const char *name)
+{
+	static const char *p, lfs64_list[] =
+		"aio_cancel\0aio_error\0aio_fsync\0aio_read\0aio_return\0"
+		"aio_suspend\0aio_write\0alphasort\0creat\0fallocate\0"
+		"fgetpos\0fopen\0freopen\0fseeko\0fsetpos\0fstat\0"
+		"fstatat\0fstatfs\0fstatvfs\0ftello\0ftruncate\0ftw\0"
+		"getdents\0getrlimit\0glob\0globfree\0lio_listio\0"
+		"lockf\0lseek\0lstat\0mkostemp\0mkostemps\0mkstemp\0"
+		"mkstemps\0mmap\0nftw\0open\0openat\0posix_fadvise\0"
+		"posix_fallocate\0pread\0preadv\0prlimit\0pwrite\0"
+		"pwritev\0readdir\0scandir\0sendfile\0setrlimit\0"
+		"stat\0statfs\0statvfs\0tmpfile\0truncate\0versionsort\0"
+		"__fxstat\0__fxstatat\0__lxstat\0__xstat\0";
+	size_t l;
+	char buf[16];
+	for (l=0; name[l]; l++) {
+		if (l >= sizeof buf) goto nomatch;
+		buf[l] = name[l];
+	}
+	if (!strcmp(name, "readdir64_r"))
+		return find_sym(&ldso, "readdir_r", 1);
+	if (l<2 || name[l-2]!='6' || name[l-1]!='4')
+		goto nomatch;
+	buf[l-=2] = 0;
+	for (p=lfs64_list; *p; p++) {
+		if (!strcmp(buf, p)) return find_sym(&ldso, buf, 1);
+		while (*p) p++;
+	}
+nomatch:
+	return (struct symdef){ 0 };
 }
 
 static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stride)
@@ -363,9 +420,10 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 			sym = syms + sym_index;
 			name = strings + sym->st_name;
 			ctx = type==REL_COPY ? head->syms_next : head;
-			def = (sym->st_info&0xf) == STT_SECTION
+			def = (sym->st_info>>4) == STB_LOCAL
 				? (struct symdef){ .dso = dso, .sym = sym }
 				: find_sym(ctx, name, type==REL_PLT);
+			if (!def.sym) def = get_lfs64(name);
 			if (!def.sym && (sym->st_shndx != SHN_UNDEF
 			    || sym->st_info>>4 != STB_WEAK)) {
 				if (dso->lazy && (type==REL_PLT || type==REL_GOT)) {
@@ -390,7 +448,7 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 		tls_val = def.sym ? def.sym->st_value : 0;
 
 		if ((type == REL_TPOFF || type == REL_TPOFF_NEG)
-		    && runtime && def.dso->tls_id > static_tls_cnt) {
+		    && def.dso->tls_id > static_tls_cnt) {
 			error("Error relocating %s: %s: initial-exec TLS "
 				"resolves to dynamic definition in %s",
 				dso->name, name, def.dso->name);
@@ -398,14 +456,15 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 		}
 
 		switch(type) {
-		case REL_NONE:
-			break;
 		case REL_OFFSET:
 			addend -= (size_t)reloc_addr;
 		case REL_SYMBOLIC:
 		case REL_GOT:
 		case REL_PLT:
 			*reloc_addr = sym_val + addend;
+			break;
+		case REL_USYMBOLIC:
+			memcpy(reloc_addr, &(size_t){sym_val + addend}, sizeof(size_t));
 			break;
 		case REL_RELATIVE:
 			*reloc_addr = (size_t)base + addend;
@@ -450,7 +509,7 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 #endif
 		case REL_TLSDESC:
 			if (stride<3) addend = reloc_addr[1];
-			if (runtime && def.dso->tls_id > static_tls_cnt) {
+			if (def.dso->tls_id > static_tls_cnt) {
 				struct td_index *new = malloc(sizeof *new);
 				if (!new) {
 					error(
@@ -489,6 +548,23 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 			continue;
 		}
 	}
+}
+
+static void do_relr_relocs(struct dso *dso, size_t *relr, size_t relr_size)
+{
+	unsigned char *base = dso->base;
+	size_t *reloc_addr;
+	for (; relr_size; relr++, relr_size-=sizeof(size_t))
+		if ((relr[0]&1) == 0) {
+			reloc_addr = laddr(dso, relr[0]);
+			*reloc_addr++ += (size_t)base;
+		} else {
+			int i = 0;
+			for (size_t bitmap=relr[0]; (bitmap>>=1); i++)
+				if (bitmap&1)
+					reloc_addr[i] += (size_t)base;
+			reloc_addr += 8*sizeof(size_t)-1;
+		}
 }
 
 static void redo_lazy_relocs()
@@ -539,10 +615,25 @@ static void reclaim_gaps(struct dso *dso)
 	}
 }
 
+static ssize_t read_loop(int fd, void *p, size_t n)
+{
+	for (size_t i=0; i<n; ) {
+		ssize_t l = read(fd, (char *)p+i, n-i);
+		if (l<0) {
+			if (errno==EINTR) continue;
+			else return -1;
+		}
+		if (l==0) return i;
+		i += l;
+	}
+	return n;
+}
+
 static void *mmap_fixed(void *p, size_t n, int prot, int flags, int fd, off_t off)
 {
 	static int no_map_fixed;
 	char *q;
+	if (!n) return p;
 	if (!no_map_fixed) {
 		q = mmap(p, n, prot, flags|MAP_FIXED, fd, off);
 		if (!DL_NOMMU_SUPPORT || q != MAP_FAILED || errno != EINVAL)
@@ -829,7 +920,7 @@ static int fixup_rpath(struct dso *p, char *buf, size_t buf_size)
 		case ENOENT:
 		case ENOTDIR:
 		case EACCES:
-			break;
+			return 0;
 		default:
 			return -1;
 		}
@@ -1043,13 +1134,17 @@ static struct dso *load_library(const char *name, struct dso *needed_by)
 				snprintf(etc_ldso_path, sizeof etc_ldso_path,
 					"%.*s/etc/ld-musl-" LDSO_ARCH ".path",
 					(int)prefix_len, prefix);
-				FILE *f = fopen(etc_ldso_path, "rbe");
-				if (f) {
-					if (getdelim(&sys_path, (size_t[1]){0}, 0, f) <= 0) {
+				fd = open(etc_ldso_path, O_RDONLY|O_CLOEXEC);
+				if (fd>=0) {
+					size_t n = 0;
+					if (!fstat(fd, &st)) n = st.st_size;
+					if ((sys_path = malloc(n+1)))
+						sys_path[n] = 0;
+					if (!sys_path || read_loop(fd, sys_path, n)<0) {
 						free(sys_path);
 						sys_path = "";
 					}
-					fclose(f);
+					close(fd);
 				} else if (errno != ENOENT) {
 					sys_path = "";
 				}
@@ -1125,9 +1220,9 @@ static struct dso *load_library(const char *name, struct dso *needed_by)
 		p->tls_id = ++tls_cnt;
 		tls_align = MAXP2(tls_align, p->tls.align);
 #ifdef TLS_ABOVE_TP
-		p->tls.offset = tls_offset + ( (tls_align-1) &
-			-(tls_offset + (uintptr_t)p->tls.image) );
-		tls_offset += p->tls.size;
+		p->tls.offset = tls_offset + ( (p->tls.align-1) &
+			(-tls_offset + (uintptr_t)p->tls.image) );
+		tls_offset = p->tls.offset + p->tls.size;
 #else
 		tls_offset += p->tls.size + p->tls.align - 1;
 		tls_offset -= (tls_offset + (uintptr_t)p->tls.image)
@@ -1314,13 +1409,17 @@ static void reloc_all(struct dso *p)
 			2+(dyn[DT_PLTREL]==DT_RELA));
 		do_relocs(p, laddr(p, dyn[DT_REL]), dyn[DT_RELSZ], 2);
 		do_relocs(p, laddr(p, dyn[DT_RELA]), dyn[DT_RELASZ], 3);
+		if (!DL_FDPIC)
+			do_relr_relocs(p, laddr(p, dyn[DT_RELR]), dyn[DT_RELRSZ]);
 
-		if (head != &ldso && p->relro_start != p->relro_end &&
-		    mprotect(laddr(p, p->relro_start), p->relro_end-p->relro_start, PROT_READ)
-		    && errno != ENOSYS) {
-			error("Error relocating %s: RELRO protection failed: %m",
-				p->name);
-			if (runtime) longjmp(*rtld_fail, 1);
+		if (head != &ldso && p->relro_start != p->relro_end) {
+			long ret = __syscall(SYS_mprotect, laddr(p, p->relro_start),
+				p->relro_end-p->relro_start, PROT_READ);
+			if (ret != 0 && ret != -ENOSYS) {
+				error("Error relocating %s: RELRO protection failed: %m",
+					p->name);
+				if (runtime) longjmp(*rtld_fail, 1);
+			}
 		}
 
 		p->relocated = 1;
@@ -1361,7 +1460,7 @@ void __libc_exit_fini()
 {
 	struct dso *p;
 	size_t dyn[DYN_CNT];
-	int self = __pthread_self()->tid;
+	pthread_t self = __pthread_self();
 
 	/* Take both locks before setting shutting_down, so that
 	 * either lock is sufficient to read its value. The lock
@@ -1384,6 +1483,17 @@ void __libc_exit_fini()
 		if ((dyn[0] & (1<<DT_FINI)) && dyn[DT_FINI])
 			fpaddr(p, dyn[DT_FINI])();
 #endif
+	}
+}
+
+void __ldso_atfork(int who)
+{
+	if (who<0) {
+		pthread_rwlock_wrlock(&lock);
+		pthread_mutex_lock(&init_fini_lock);
+	} else {
+		pthread_mutex_unlock(&init_fini_lock);
+		pthread_rwlock_unlock(&lock);
 	}
 }
 
@@ -1445,6 +1555,13 @@ static struct dso **queue_ctors(struct dso *dso)
 	}
 	queue[qpos] = 0;
 	for (i=0; i<qpos; i++) queue[i]->mark = 0;
+	for (i=0; i<qpos; i++)
+		if (queue[i]->ctor_visitor && queue[i]->ctor_visitor->tid < 0) {
+			error("State of %s is inconsistent due to multithreaded fork\n",
+				queue[i]->name);
+			free(queue);
+			if (runtime) longjmp(*rtld_fail, 1);
+		}
 
 	return queue;
 }
@@ -1453,7 +1570,7 @@ static void do_init_fini(struct dso **queue)
 {
 	struct dso *p;
 	size_t dyn[DYN_CNT], i;
-	int self = __pthread_self()->tid;
+	pthread_t self = __pthread_self();
 
 	pthread_mutex_lock(&init_fini_lock);
 	for (i=0; (p=queue[i]); i++) {
@@ -1562,7 +1679,7 @@ static void install_new_tls(void)
 
 	/* Install new dtv for each thread. */
 	for (j=0, td=self; !j || td!=self; j++, td=td->next) {
-		td->dtv = td->dtv_copy = newdtv[j];
+		td->dtv = newdtv[j];
 	}
 
 	__tl_unlock();
@@ -1582,13 +1699,14 @@ static void install_new_tls(void)
 
 hidden void __dls2(unsigned char *base, size_t *sp)
 {
+	size_t *auxv;
+	for (auxv=sp+1+*sp+1; *auxv; auxv++);
+	auxv++;
 	if (DL_FDPIC) {
 		void *p1 = (void *)sp[-2];
 		void *p2 = (void *)sp[-1];
 		if (!p1) {
-			size_t *auxv, aux[AUX_CNT];
-			for (auxv=sp+1+*sp+1; *auxv; auxv++);
-			auxv++;
+			size_t aux[AUX_CNT];
 			decode_vec(auxv, aux, AUX_CNT);
 			if (aux[AT_BASE]) ldso.base = (void *)aux[AT_BASE];
 			else ldso.base = (void *)(aux[AT_PHDR] & -4096);
@@ -1634,8 +1752,8 @@ hidden void __dls2(unsigned char *base, size_t *sp)
 	 * symbolically as a barrier against moving the address
 	 * load across the above relocation processing. */
 	struct symdef dls2b_def = find_sym(&ldso, "__dls2b", 0);
-	if (DL_FDPIC) ((stage3_func)&ldso.funcdescs[dls2b_def.sym-ldso.syms])(sp);
-	else ((stage3_func)laddr(&ldso, dls2b_def.sym->st_value))(sp);
+	if (DL_FDPIC) ((stage3_func)&ldso.funcdescs[dls2b_def.sym-ldso.syms])(sp, auxv);
+	else ((stage3_func)laddr(&ldso, dls2b_def.sym->st_value))(sp, auxv);
 }
 
 /* Stage 2b sets up a valid thread pointer, which requires relocations
@@ -1644,11 +1762,13 @@ hidden void __dls2(unsigned char *base, size_t *sp)
  * so that loads of the thread pointer and &errno can be pure/const and
  * thereby hoistable. */
 
-_Noreturn void __dls2b(size_t *sp)
+void __dls2b(size_t *sp, size_t *auxv)
 {
 	/* Setup early thread pointer in builtin_tls for ldso/libc itself to
 	 * use during dynamic linking. If possible it will also serve as the
 	 * thread pointer at runtime. */
+	search_vec(auxv, &__hwcap, AT_HWCAP);
+	libc.auxv = auxv;
 	libc.tls_size = sizeof builtin_tls;
 	libc.tls_align = tls_align;
 	if (__init_tp(__copy_tls((void *)builtin_tls)) < 0) {
@@ -1656,8 +1776,8 @@ _Noreturn void __dls2b(size_t *sp)
 	}
 
 	struct symdef dls3_def = find_sym(&ldso, "__dls3", 0);
-	if (DL_FDPIC) ((stage3_func)&ldso.funcdescs[dls3_def.sym-ldso.syms])(sp);
-	else ((stage3_func)laddr(&ldso, dls3_def.sym->st_value))(sp);
+	if (DL_FDPIC) ((stage3_func)&ldso.funcdescs[dls3_def.sym-ldso.syms])(sp, auxv);
+	else ((stage3_func)laddr(&ldso, dls3_def.sym->st_value))(sp, auxv);
 }
 
 /* Stage 3 of the dynamic linker is called with the dynamic linker/libc
@@ -1665,10 +1785,10 @@ _Noreturn void __dls2b(size_t *sp)
  * process dependencies and relocations for the main application and
  * transfer control to its entry point. */
 
-_Noreturn void __dls3(size_t *sp)
+void __dls3(size_t *sp, size_t *auxv)
 {
 	static struct dso app, vdso;
-	size_t aux[AUX_CNT], *auxv;
+	size_t aux[AUX_CNT];
 	size_t i;
 	char *env_preload=0;
 	char *replace_argv0=0;
@@ -1681,10 +1801,9 @@ _Noreturn void __dls3(size_t *sp)
 	/* Find aux vector just past environ[] and use it to initialize
 	 * global data that may be needed before we can make syscalls. */
 	__environ = envp;
-	for (i=argc+1; argv[i]; i++);
-	libc.auxv = auxv = (void *)(argv+i+1);
 	decode_vec(auxv, aux, AUX_CNT);
-	__hwcap = aux[AT_HWCAP];
+	search_vec(auxv, &__sysinfo, AT_SYSINFO);
+	__pthread_self()->sysinfo = __sysinfo;
 	libc.page_size = aux[AT_PAGESZ];
 	libc.secure = ((aux[0]&0x7800)!=0x7800 || aux[AT_UID]!=aux[AT_EUID]
 		|| aux[AT_GID]!=aux[AT_EGID] || aux[AT_SECURE]);
@@ -1694,6 +1813,9 @@ _Noreturn void __dls3(size_t *sp)
 		env_path = getenv("LD_LIBRARY_PATH");
 		env_preload = getenv("LD_PRELOAD");
 	}
+
+	/* Activate error handler function */
+	error = error_impl;
 
 	/* If the main program was already loaded by the kernel,
 	 * AT_PHDR will point to some location other than the dynamic
@@ -1770,7 +1892,7 @@ _Noreturn void __dls3(size_t *sp)
 			dprintf(2, "%s: cannot load %s: %s\n", ldname, argv[0], strerror(errno));
 			_exit(1);
 		}
-		Ehdr *ehdr = (void *)map_library(fd, &app);
+		Ehdr *ehdr = map_library(fd, &app);
 		if (!ehdr) {
 			dprintf(2, "%s: %s: Not a valid dynamic program\n", ldname, argv[0]);
 			_exit(1);
@@ -1794,10 +1916,9 @@ _Noreturn void __dls3(size_t *sp)
 		app.tls_id = tls_cnt = 1;
 #ifdef TLS_ABOVE_TP
 		app.tls.offset = GAP_ABOVE_TP;
-		app.tls.offset += -GAP_ABOVE_TP & (app.tls.align-1);
-		tls_offset = app.tls.offset + app.tls.size
-			+ ( -((uintptr_t)app.tls.image + app.tls.size)
-			& (app.tls.align-1) );
+		app.tls.offset += (-GAP_ABOVE_TP + (uintptr_t)app.tls.image)
+			& (app.tls.align-1);
+		tls_offset = app.tls.offset + app.tls.size;
 #else
 		tls_offset = app.tls.offset = app.tls.size
 			+ ( -((uintptr_t)app.tls.image + app.tls.size)
@@ -1873,19 +1994,28 @@ _Noreturn void __dls3(size_t *sp)
 	 * code can see to perform. */
 	main_ctor_queue = queue_ctors(&app);
 
-	/* The main program must be relocated LAST since it may contin
-	 * copy relocations which depend on libraries' relocations. */
-	reloc_all(app.next);
-	reloc_all(&app);
-
+	/* Initial TLS must also be allocated before final relocations
+	 * might result in calloc being a call to application code. */
 	update_tls_size();
+	void *initial_tls = builtin_tls;
 	if (libc.tls_size > sizeof builtin_tls || tls_align > MIN_TLS_ALIGN) {
-		void *initial_tls = calloc(libc.tls_size, 1);
+		initial_tls = calloc(libc.tls_size, 1);
 		if (!initial_tls) {
 			dprintf(2, "%s: Error getting %zu bytes thread-local storage: %m\n",
 				argv[0], libc.tls_size);
 			_exit(127);
 		}
+	}
+	static_tls_cnt = tls_cnt;
+
+	/* The main program must be relocated LAST since it may contain
+	 * copy relocations which depend on libraries' relocations. */
+	reloc_all(app.next);
+	reloc_all(&app);
+
+	/* Actual copying to new TLS needs to happen after relocations,
+	 * since the TLS images might have contained relocated addresses. */
+	if (initial_tls != builtin_tls) {
 		if (__init_tp(__copy_tls(initial_tls)) < 0) {
 			a_crash();
 		}
@@ -1899,7 +2029,6 @@ _Noreturn void __dls3(size_t *sp)
 		if (__copy_tls((void*)builtin_tls) != self) a_crash();
 		libc.tls_size = tmp_tls_size;
 	}
-	static_tls_cnt = tls_cnt;
 
 	if (ldso_fail) _exit(127);
 	if (ldd_mode) _exit(0);
@@ -1909,6 +2038,8 @@ _Noreturn void __dls3(size_t *sp)
 	 * possibility of incomplete replacement. */
 	if (find_sym(head, "malloc", 1).dso != &ldso)
 		__malloc_replaced = 1;
+	if (find_sym(head, "aligned_alloc", 1).dso != &ldso)
+		__aligned_alloc_replaced = 1;
 
 	/* Switch to runtime mode: any further failures in the dynamic
 	 * linker are a reportable failure rather than a fatal startup
@@ -1919,7 +2050,7 @@ _Noreturn void __dls3(size_t *sp)
 	debug.bp = dl_debug_state;
 	debug.head = head;
 	debug.base = ldso.base;
-	debug.state = 0;
+	debug.state = RT_CONSISTENT;
 	_dl_debug_state();
 
 	if (replace_argv0) argv[0] = replace_argv0;
@@ -1967,6 +2098,9 @@ void *dlopen(const char *file, int mode)
 	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
 	pthread_rwlock_wrlock(&lock);
 	__inhibit_ptc();
+
+	debug.state = RT_ADD;
+	_dl_debug_state();
 
 	p = 0;
 	if (shutting_down) {
@@ -2027,8 +2161,9 @@ void *dlopen(const char *file, int mode)
 	load_deps(p);
 	extend_bfs_deps(p);
 	pthread_mutex_lock(&init_fini_lock);
-	if (!p->constructed) ctor_queue = queue_ctors(p);
+	int constructed = p->constructed;
 	pthread_mutex_unlock(&init_fini_lock);
+	if (!constructed) ctor_queue = queue_ctors(p);
 	if (!p->relocated && (mode & RTLD_LAZY)) {
 		prepare_lazy(p);
 		for (i=0; p->deps[i]; i++)
@@ -2060,9 +2195,10 @@ void *dlopen(const char *file, int mode)
 	update_tls_size();
 	if (tls_cnt != orig_tls_cnt)
 		install_new_tls();
-	_dl_debug_state();
 	orig_tail = tail;
 end:
+	debug.state = RT_CONSISTENT;
+	_dl_debug_state();
 	__release_ptc();
 	if (p) gencnt++;
 	pthread_rwlock_unlock(&lock);
@@ -2117,58 +2253,27 @@ static void *addr2dso(size_t a)
 
 static void *do_dlsym(struct dso *p, const char *s, void *ra)
 {
-	size_t i;
-	uint32_t h = 0, gh = 0, *ght;
-	Sym *sym;
-	if (p == head || p == RTLD_DEFAULT || p == RTLD_NEXT) {
-		if (p == RTLD_DEFAULT) {
-			p = head;
-		} else if (p == RTLD_NEXT) {
-			p = addr2dso((size_t)ra);
-			if (!p) p=head;
-			p = p->next;
-		}
-		struct symdef def = find_sym(p, s, 0);
-		if (!def.sym) goto failed;
-		if ((def.sym->st_info&0xf) == STT_TLS)
-			return __tls_get_addr((tls_mod_off_t []){def.dso->tls_id, def.sym->st_value-DTP_OFFSET});
-		if (DL_FDPIC && (def.sym->st_info&0xf) == STT_FUNC)
-			return def.dso->funcdescs + (def.sym - def.dso->syms);
-		return laddr(def.dso, def.sym->st_value);
-	}
-	if (__dl_invalid_handle(p))
+	int use_deps = 0;
+	if (p == head || p == RTLD_DEFAULT) {
+		p = head;
+	} else if (p == RTLD_NEXT) {
+		p = addr2dso((size_t)ra);
+		if (!p) p=head;
+		p = p->next;
+	} else if (__dl_invalid_handle(p)) {
 		return 0;
-	if ((ght = p->ghashtab)) {
-		gh = gnu_hash(s);
-		sym = gnu_lookup(gh, ght, p, s);
-	} else {
-		h = sysv_hash(s);
-		sym = sysv_lookup(s, h, p);
+	} else
+		use_deps = 1;
+	struct symdef def = find_sym2(p, s, 0, use_deps);
+	if (!def.sym) {
+		error("Symbol not found: %s", s);
+		return 0;
 	}
-	if (sym && (sym->st_info&0xf) == STT_TLS)
-		return __tls_get_addr((tls_mod_off_t []){p->tls_id, sym->st_value-DTP_OFFSET});
-	if (DL_FDPIC && sym && sym->st_shndx && (sym->st_info&0xf) == STT_FUNC)
-		return p->funcdescs + (sym - p->syms);
-	if (sym && sym->st_value && (1<<(sym->st_info&0xf) & OK_TYPES))
-		return laddr(p, sym->st_value);
-	for (i=0; p->deps[i]; i++) {
-		if ((ght = p->deps[i]->ghashtab)) {
-			if (!gh) gh = gnu_hash(s);
-			sym = gnu_lookup(gh, ght, p->deps[i], s);
-		} else {
-			if (!h) h = sysv_hash(s);
-			sym = sysv_lookup(s, h, p->deps[i]);
-		}
-		if (sym && (sym->st_info&0xf) == STT_TLS)
-			return __tls_get_addr((tls_mod_off_t []){p->deps[i]->tls_id, sym->st_value-DTP_OFFSET});
-		if (DL_FDPIC && sym && sym->st_shndx && (sym->st_info&0xf) == STT_FUNC)
-			return p->deps[i]->funcdescs + (sym - p->deps[i]->syms);
-		if (sym && sym->st_value && (1<<(sym->st_info&0xf) & OK_TYPES))
-			return laddr(p->deps[i], sym->st_value);
-	}
-failed:
-	error("Symbol not found: %s", s);
-	return 0;
+	if ((def.sym->st_info&0xf) == STT_TLS)
+		return __tls_get_addr((tls_mod_off_t []){def.dso->tls_id, def.sym->st_value-DTP_OFFSET});
+	if (DL_FDPIC && (def.sym->st_info&0xf) == STT_FUNC)
+		return def.dso->funcdescs + (def.sym - def.dso->syms);
+	return laddr(def.dso, def.sym->st_value);
 }
 
 int dladdr(const void *addr_arg, Dl_info *info)
@@ -2216,7 +2321,7 @@ int dladdr(const void *addr_arg, Dl_info *info)
 		}
 	}
 
-	if (bestsym && besterr > bestsym->st_size-1) {
+	if (best && besterr > bestsym->st_size-1) {
 		best = 0;
 		bestsym = 0;
 	}
@@ -2247,6 +2352,33 @@ hidden void *__dlsym(void *restrict p, const char *restrict s, void *restrict ra
 	return res;
 }
 
+hidden void *__dlsym_redir_time64(void *restrict p, const char *restrict s, void *restrict ra)
+{
+#if _REDIR_TIME64
+	const char *suffix, *suffix2 = "";
+	char redir[36];
+
+	/* Map the symbol name to a time64 version of itself according to the
+	 * pattern used for naming the redirected time64 symbols. */
+	size_t l = strnlen(s, sizeof redir);
+	if (l<4 || l==sizeof redir) goto no_redir;
+	if (s[l-2]=='_' && s[l-1]=='r') {
+		l -= 2;
+		suffix2 = s+l;
+	}
+	if (l<4) goto no_redir;
+	if (!strcmp(s+l-4, "time")) suffix = "64";
+	else suffix = "_time64";
+
+	/* Use the presence of the remapped symbol name in libc to determine
+	 * whether it's one that requires time64 redirection; replace if so. */
+	snprintf(redir, sizeof redir, "__%.*s%s%s", (int)l, s, suffix, suffix2);
+	if (find_sym(&ldso, redir, 1).sym) s = redir;
+no_redir:
+#endif
+	return __dlsym(p, s, ra);
+}
+
 int dl_iterate_phdr(int(*callback)(struct dl_phdr_info *info, size_t size, void *data), void *data)
 {
 	struct dso *current;
@@ -2260,7 +2392,8 @@ int dl_iterate_phdr(int(*callback)(struct dl_phdr_info *info, size_t size, void 
 		info.dlpi_adds      = gencnt;
 		info.dlpi_subs      = 0;
 		info.dlpi_tls_modid = current->tls_id;
-		info.dlpi_tls_data  = current->tls.image;
+		info.dlpi_tls_data = !current->tls_id ? 0 :
+			__tls_get_addr((tls_mod_off_t[]){current->tls_id,0});
 
 		ret = (callback)(&info, sizeof (info), data);
 
@@ -2273,7 +2406,7 @@ int dl_iterate_phdr(int(*callback)(struct dl_phdr_info *info, size_t size, void 
 	return ret;
 }
 
-static void error(const char *fmt, ...)
+static void error_impl(const char *fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
@@ -2286,4 +2419,8 @@ static void error(const char *fmt, ...)
 	}
 	__dl_vseterr(fmt, ap);
 	va_end(ap);
+}
+
+static void error_noop(const char *fmt, ...)
+{
 }

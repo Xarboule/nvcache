@@ -3,12 +3,13 @@
 #include <time.h>
 #include "atomic.h"
 #include "pthread_impl.h"
+#include "aio_impl.h"
 
 int aio_suspend(const struct aiocb *const cbs[], int cnt, const struct timespec *ts)
 {
 	int i, tid = 0, ret, expect = 0;
 	struct timespec at;
-	volatile int dummy_fut, *pfut;
+	volatile int dummy_fut = 0, *pfut;
 	int nzcnt = 0;
 	const struct aiocb *cb = 0;
 
@@ -72,5 +73,3 @@ int aio_suspend(const struct aiocb *const cbs[], int cnt, const struct timespec 
 		}
 	}
 }
-
-weak_alias(aio_suspend, aio_suspend64);

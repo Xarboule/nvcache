@@ -69,15 +69,29 @@ _Noreturn void __pthread_exit(void *result)
 
 	__pthread_tsd_run_dtors();
 
+	__block_app_sigs(&set);
+
+	/* This atomic potentially competes with a concurrent pthread_detach
+	 * call; the loser is responsible for freeing thread resources. */
+	int state = a_cas(&self->detach_state, DT_JOINABLE, DT_EXITING);
+
+	if (state==DT_DETACHED && self->map_base) {
+		/* Since __unmapself bypasses the normal munmap code path,
+		 * explicitly wait for vmlock holders first. This must be
+		 * done before any locks are taken, to avoid lock ordering
+		 * issues that could lead to deadlock. */
+		__vm_wait();
+	}
+
 	/* Access to target the exiting thread with syscalls that use
 	 * its kernel tid is controlled by killlock. For detached threads,
 	 * any use past this point would have undefined behavior, but for
-	 * joinable threads it's a valid usage that must be handled. */
+	 * joinable threads it's a valid usage that must be handled.
+	 * Signals must be blocked since pthread_kill must be AS-safe. */
 	LOCK(self->killlock);
 
-	/* The thread list lock must be AS-safe, and thus requires
-	 * application signals to be blocked before it can be taken. */
-	__block_app_sigs(&set);
+	/* The thread list lock must be AS-safe, and thus depends on
+	 * application signals being blocked above. */
 	__tl_lock();
 
 	/* If this is the only thread in the list, don't proceed with
@@ -85,19 +99,23 @@ _Noreturn void __pthread_exit(void *result)
 	 * signal state to prepare for exit to call atexit handlers. */
 	if (self->next == self) {
 		__tl_unlock();
-		__restore_sigs(&set);
 		UNLOCK(self->killlock);
+		self->detach_state = state;
+		__restore_sigs(&set);
 		exit(0);
 	}
 
-	/* At this point we are committed to thread termination. Unlink
-	 * the thread from the list. This change will not be visible
-	 * until the lock is released, which only happens after SYS_exit
-	 * has been called, via the exit futex address pointing at the lock. */
-	libc.threads_minus_1--;
-	self->next->prev = self->prev;
-	self->prev->next = self->next;
-	self->prev = self->next = self;
+	/* At this point we are committed to thread termination. */
+
+	/* After the kernel thread exits, its tid may be reused. Clear it
+	 * to prevent inadvertent use and inform functions that would use
+	 * it that it's no longer available. At this point the killlock
+	 * may be released, since functions that use it will consistently
+	 * see the thread as having exited. Release it now so that no
+	 * remaining locks (except thread list) are held if we end up
+	 * resetting need_locks below. */
+	self->tid = 0;
+	UNLOCK(self->killlock);
 
 	/* Process robust list in userspace to handle non-pshared mutexes
 	 * and the detached thread case where the robust list head will
@@ -121,9 +139,15 @@ _Noreturn void __pthread_exit(void *result)
 	__do_orphaned_stdio_locks();
 	__dl_thread_cleanup();
 
-	/* This atomic potentially competes with a concurrent pthread_detach
-	 * call; the loser is responsible for freeing thread resources. */
-	int state = a_cas(&self->detach_state, DT_JOINABLE, DT_EXITING);
+	/* Last, unlink thread from the list. This change will not be visible
+	 * until the lock is released, which only happens after SYS_exit
+	 * has been called, via the exit futex address pointing at the lock.
+	 * This needs to happen after any possible calls to LOCK() that might
+	 * skip locking if process appears single-threaded. */
+	if (!--libc.threads_minus_1) libc.need_locks = -1;
+	self->next->prev = self->prev;
+	self->prev->next = self->next;
+	self->prev = self->next = self;
 
 	if (state==DT_DETACHED && self->map_base) {
 		/* Detached threads must block even implementation-internal
@@ -136,23 +160,14 @@ _Noreturn void __pthread_exit(void *result)
 		if (self->robust_list.off)
 			__syscall(SYS_set_robust_list, 0, 3*sizeof(long));
 
-		/* Since __unmapself bypasses the normal munmap code path,
-		 * explicitly wait for vmlock holders first. */
-		__vm_wait();
-
 		/* The following call unmaps the thread's stack mapping
 		 * and then exits without touching the stack. */
 		__unmapself(self->map_base, self->map_size);
 	}
 
 	/* Wake any joiner. */
+	a_store(&self->detach_state, DT_EXITED);
 	__wake(&self->detach_state, 1, 1);
-
-	/* After the kernel thread exits, its tid may be reused. Clear it
-	 * to prevent inadvertent use and inform functions that would use
-	 * it that it's no longer available. */
-	self->tid = 0;
-	UNLOCK(self->killlock);
 
 	for (;;) __syscall(SYS_exit, 0);
 }
@@ -172,23 +187,20 @@ void __do_cleanup_pop(struct __ptcb *cb)
 struct start_args {
 	void *(*start_func)(void *);
 	void *start_arg;
-	pthread_attr_t *attr;
-	volatile int *perr;
+	volatile int control;
 	unsigned long sig_mask[_NSIG/8/sizeof(long)];
 };
 
 static int start(void *p)
 {
 	struct start_args *args = p;
-	if (args->attr) {
-		pthread_t self = __pthread_self();
-		int ret = -__syscall(SYS_sched_setscheduler, self->tid,
-			args->attr->_a_policy, &args->attr->_a_prio);
-		if (a_swap(args->perr, ret)==-2)
-			__wake(args->perr, 1, 1);
-		if (ret) {
-			self->detach_state = DT_DETACHED;
-			__pthread_exit(0);
+	int state = args->control;
+	if (state) {
+		if (a_cas(&args->control, 1, 2)==1)
+			__wait(&args->control, 0, 2, 1);
+		if (args->control) {
+			__syscall(SYS_set_tid_address, &args->control);
+			for (;;) __syscall(SYS_exit, 0);
 		}
 	}
 	__syscall(SYS_rt_sigprocmask, SIG_SETMASK, &args->sig_mask, 0, _NSIG/8);
@@ -233,7 +245,6 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 		| CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED;
 	pthread_attr_t attr = { 0 };
 	sigset_t set;
-	volatile int err = -1;
 
 	if (!libc.can_do_threads) return ENOSYS;
 	self = __pthread_self();
@@ -314,7 +325,8 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 		new->detach_state = DT_JOINABLE;
 	}
 	new->robust_list.head = &new->robust_list.head;
-	new->CANARY = self->CANARY;
+	new->canary = self->canary;
+	new->sysinfo = self->sysinfo;
 
 	/* Setup argument structure for the new thread on its stack.
 	 * It's safe to access from the caller only until the thread
@@ -324,13 +336,7 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 	struct start_args *args = (void *)stack;
 	args->start_func = entry;
 	args->start_arg = arg;
-	if (attr._a_sched) {
-		args->attr = &attr;
-		args->perr = &err;
-	} else {
-		args->attr = 0;
-		args->perr = 0;
-	}
+	args->control = attr._a_sched ? 1 : 0;
 
 	/* Application signals (but not the synccall signal) must be
 	 * blocked before the thread list lock can be taken, to ensure
@@ -345,32 +351,39 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 		~(1UL<<((SIGCANCEL-1)%(8*sizeof(long))));
 
 	__tl_lock();
-	libc.threads_minus_1++;
+	if (!libc.threads_minus_1++) libc.need_locks = 1;
 	ret = __clone((c11 ? start_c11 : start), stack, flags, args, &new->tid, TP_ADJ(new), &__thread_list_lock);
 
-	/* If clone succeeded, new thread must be linked on the thread
-	 * list before unlocking it, even if scheduling may still fail. */
+	/* All clone failures translate to EAGAIN. If explicit scheduling
+	 * was requested, attempt it before unlocking the thread list so
+	 * that the failed thread is never exposed and so that we can
+	 * clean up all transient resource usage before returning. */
+	if (ret < 0) {
+		ret = -EAGAIN;
+	} else if (attr._a_sched) {
+		ret = __syscall(SYS_sched_setscheduler,
+			new->tid, attr._a_policy, &attr._a_prio);
+		if (a_swap(&args->control, ret ? 3 : 0)==2)
+			__wake(&args->control, 1, 1);
+		if (ret)
+			__wait(&args->control, 0, 3, 0);
+	}
+
 	if (ret >= 0) {
 		new->next = self->next;
 		new->prev = self;
 		new->next->prev = new;
 		new->prev->next = new;
+	} else {
+		if (!--libc.threads_minus_1) libc.need_locks = 0;
 	}
 	__tl_unlock();
 	__restore_sigs(&set);
 	__release_ptc();
 
 	if (ret < 0) {
-		libc.threads_minus_1--;
 		if (map) __munmap(map, size);
-		return EAGAIN;
-	}
-
-	if (attr._a_sched) {
-		if (a_cas(&err, -1, -2)==-1)
-			__wait(&err, 0, -2, 1);
-		ret = err;
-		if (ret) return ret;
+		return -ret;
 	}
 
 	*res = new;

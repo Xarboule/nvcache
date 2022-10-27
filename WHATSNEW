@@ -2077,3 +2077,253 @@ bugs fixed:
 
 arch-specfic bugs fixed:
 - s390x had wrong values for POSIX_FADV_DONTNEED/_NOREUSE
+
+
+
+1.1.23 release notes
+
+new features:
+- riscv64 port
+- configure now allows customizing AR and RANLIB vars
+- header-level support for new linux features in 5.1
+
+major internal changes:
+- removed extern __syscall; syscall header code is now fully self-contained
+
+performance:
+- new math library implementation for log/exp/pow
+- aarch64 dynamic tlsdesc function is streamlined
+
+compatibility & conformance:
+- O_TTY_INIT is now defined
+- sys/types.h no longer pollutes namespace with sys/sysmacros.h in any profile
+- powerpc asm is now compatible with clang internal assembler
+
+changes for new POSIX interpretations:
+- fgetwc now sets stream error indicator on encoding errors
+- fmemopen no longer rejects 0 size
+
+bugs fixed:
+- static TLS for shared libraries was allocated wrong on "Variant I" archs
+- crash in dladdr reading through uninitialized pointer on non-match
+- sigaltstack wrongly errored out on invalid ss_size when doing SS_DISABLE
+- getdents function misbehaved with buffer length larger than INT_MAX
+- set*id could deadlock after fork from multithreaded process
+
+arch-specfic bugs fixed:
+- s390x SO_PEERSEC definition was wrong
+- passing of 64-bit syscall arguments was broken on microblaze
+- posix_fadvise was broken on mips due to missing 7-arg syscall support
+- vrregset_t layout and member naming was wrong on powerpc64
+
+
+
+1.1.24 release notes
+
+new features:
+- GLOB_TILDE extension to glob
+- non-stub catgets localization API, using netbsd binary catalog format
+- posix_spawn file actions for [f]chdir (extension, pending future standard)
+- secure_getenv function (extension)
+- copy_file_range syscall wrapper (Linux extension)
+- header-level support for new linux features in 5.2
+
+performance:
+- new fast path for lrint (generic C version) on 32-bit archs
+
+major internal changes:
+- functions involving time are overhauled to be time64-ready in 32-bit archs
+- x32 uses the new time64 code paths to replace nasty hacks in syscall glue
+
+compatibility & conformance:
+- support for powerpc[64] unaligned relocation types
+- powerpc[64] and sh sys/user.h no longer clash with kernel asm/ptrace.h
+- select no longer modifies timeout on failure (or at all)
+- mips64 stat results are no longer limited to 32-bit time range
+- optreset (BSD extension) now has a public declaration
+- support for clang inconsistencies in wchar_t type vs some 32-bit archs
+- mips r6 syscall asm no longer has invalid lo/hi register clobbers
+- vestigial asm declarations of __tls_get_new are removed (broke some tooling)
+- riscv64 mcontext_t mismatch glibc's member naming is corrected
+
+bugs fixed:
+- glob failed to match broken symlinks consistently
+- invalid use of interposed calloc to allocate initial TLS
+- various dlsym symbol resolution logic errors
+- semctl with SEM_STAT_ANY didn't work
+- pthread_create with explicit scheduling was subject to priority inversion
+- pthread_create failure path had data race for thread count
+- timer_create with SIGEV_THREAD notification had data race getting timer id
+- wide printf family failed to support l modifier for float formats
+
+arch-specific bugs fixed:
+- x87 floating point stack imbalance in math asm (i386-only CVE-2019-14697)
+- x32 clock_adjtime, getrusage, wait3, wait4 produced junk (struct mismatches)
+- lseek broken on x32 and mipsn32 with large file offsets
+- riscv64 atomics weren't compiler barriers
+- riscv64 atomics had broken asm constraints (missing earlyclobber flag)
+- arm clone() was broken when compiled as thumb if start function returned
+- mipsr6 setjmp/longjmp did not preserve fpu register state correctly
+
+
+
+1.2.0 release notes
+
+new features:
+- time_t is now 64-bit on all archs (not just 64-bit archs)
+- character type & case mapping data updated to Unicode 12.1.0
+- header-level support for new linux features in 5.3 and 5.4
+
+performance:
+- new O(1) wchar_t case mapping implementation
+- i386 now uses C math code for exp, faster than old asm
+- mips math asm
+
+compatibility & conformance:
+- endian.h now aims to conform to future POSIX definition
+- support older compilers that don't accept powerpc math asm constraints
+- fdpic code in ldso was incompatible with valid optimizations in gcc 9+
+- RLIMIT_RTTIME was missing from sys/resource.h
+
+bugs fixed:
+- wcwidth wrongly returned 0 for most of planes 4 and up
+- missing case mapping between U+03F3 and U+037F
+- wrong cacosh results for arguments with negative imaginary part
+- wrong catanf/catanl results for various classes of arguments
+- wrong return value for ungetc with argument outside [0,UCHAR_MAX]
+- posix_openpt with no ptys available produced wrong errno
+
+arch-specific bugs fixed:
+- sigcontext/regset definition mistakes & omissions on m68k, powerpc64
+- fesetenv(FE_DFL_ENV) crashed on riscv64
+- sh2 dynamic linker was broken since 1.1.21 (crash in stage 2b)
+- arm dynamic linker chose wrong tls/atomic variants since 1.1.21
+- some math library functions returned excess precision on i386
+- unconfirmed regression in fchmodat AT_SYMLINK_NOFOLLOW on mips*
+
+
+
+1.2.1 release notes
+
+major changes:
+- new malloc implementation (mallocng & overhauled bump allocator)
+
+new features:
+- DNS queries via res_* now set AD flag, report zone signedness (DNSSEC)
+- PTHREAD_NULL macro (POSIX-future)
+
+performance:
+- optimized memcpy and memset for aarch64
+- optimized memcpy for arm now supports big endian
+- optimized x86_64 remquol
+- improved strerror without linear search
+
+bugs fixed:
+- lock-skipping for processes that returned to single-threaded was wrong
+- AF_UNSPEC dns lookups mishandled single failure in paired A+AAAA
+- res_send and res_query returned wrong value on errors from nameserver
+- corrupted sysvipc timestamps on 32-bit archs with old kernels
+- incorrect parsing of timezone offsets after overly-long zone name
+- clock_adjtime was broken on 32-bit archs (time64)
+- pthread_kill as not async-signal-safe
+- pthread_cancel was not async-cancel-safe
+- large-ulp errors in various math functions in non-default rounding modes
+
+arch-specific bugs fixed:
+- arm clock_gettime was broken on some hw due to bad time64 vdso
+- m68k sqrtl lacked long double precision
+- mips* syscall mechanism regressions on older kernels
+- mips* had negated error codes for some syscalls (kernel bug)
+- mips* SIGEMT was wrongly called SIGSTKFLT
+- sh fesetround didn't work correctly on sh
+
+
+
+1.2.2 release notes
+
+major changes:
+- child restrictions lifted after fork of multithreaded parent
+
+new features:
+- _Fork function (POSIX-future)
+- reallocarray function (extension from OpenBSD, now widespread)
+- gettid function (kernel tid as supported concept)
+- SIGEV_THREAD_ID sigevent API (Linux extension)
+- tcgetwinsize and tcsetwinsize functions (POSIX-future)
+
+performance:
+- faster software sqrt on archs without native sqrt instruction
+
+compatibility:
+- realpath no longer depends on procfs availability & accuracy
+- time zone parser now always prefers 64-bit tables if present
+- crypt_blowfish now supports $2b$ prefix
+- res_query now reports errors via h_errno
+- set*id and setrlimit are now safe in vforked/cloned child
+- setgroups now applies to all threads
+- dlopen debugger notification is improved, should work with lldb
+- setrlimit no longer needs __synccall broadcast on linux 2.6.36+
+- faccessat with AT_EACCESS no longer needs child process on linux 5.8+
+
+bugs fixed:
+- buffer overflow and infinite loop errors in wcsnrtombs (CVE-2020-28928)
+- sem_close unmapped still-referenced semaphores
+- fork of process with active aio could deadlock or crash paren
+- pthread_cond_wait was broken with priority-inheritance mutex
+- getgrouplist wrongly failed when nscd reported an empty list
+- abort could leak modified SIGABRT disposition to fork or posix_spawn child
+- regression with mallocng: malloc_usable_size(0) crashed
+- readlink wrongly gave EINVAL on zero length dest buffer
+- sqrtl was severely inaccurate (not correctly rounded) on ldquad archs
+- assert failure wrongly flushed stdio (possible deadlock)
+- MUSL_LOCPATH search was broken with multiple components
+- missing newline in herror output
+- possible deadlock in pthread_exit with pshared mutex or barrier usage
+- pthread_mutexattr_getprotocol didn't read back protocol
+- v4l2 ioctl translation for pre-time64 kernels didn't work
+
+arch-specific bugs fixed:
+- x86_64 longjmp failed to handle 0 argument reliably
+- i386 __set_thread_area fallback for pre-2.6 kernels didn't work
+- missing O_LARGEFILE macro value on x86_64, x32, mips64
+- unpredictable s390x breakage from failure to preserve call-saved registers
+
+
+
+1.2.3 release notes
+
+new features:
+- qsort_r function (POSIX-future)
+- pthread_getname_np extension function
+- hard float on SPE FPU for powerpc-sf
+- SEEK_DATA and SEEK_HOLE exposed in unistd.h (Linux extensions)
+
+compatibility:
+- free now preserves errno (POSIX-future requirement)
+- setjmp is declared explicitly with returns_twice for non-GCC compilers
+- macro version of isascii is no longer defined for C++
+- dynamic linker now tolerates zero-length LOAD segments
+- epoll_[p]wait is now a cancellation point
+- pwd/grp functions no longer fail on systems without AF_UNIX support
+- POSIX TZ parsing is stricter to allow more names to fallback to files
+- NULL is now defined as nullptr when used in C++11 or later
+- gettext now accepts null pointer as argument
+
+bugs fixed:
+- old regression in wcwidth of Hangul combining (vowel/final) letters
+- duplocale used wrong malloc when malloc was replaced (1.2.2 regression)
+- fmaf rounded wrong on archs without FE_TOWARDZERO (all softfloat archs)
+- popen didn't honor requirement not to leak other popen pipe fds to child
+- aligned_alloc and variants crashed on allocation failure
+- dl_iterate_phdr reported incorrect module TLS pointers
+- mishandling of some inputs in acoshf and expm1f and functions using them
+- potentially wrong-sign zero in cproj functions at infinity
+- multiple bugs in legacy function cuserid
+- minor posix_spawn file actions API conformance issues
+- pthread_setname_np fd leak
+- out-of-bound read in zoneinfo handling with distant-past times
+- out-of-tree builds lacked generated debug cfi for x86 asm
+
+arch-specific bugs fixed:
+- powerpc (32-bit) struct shmid_ds layout was wrong for some fields
+- time64 struct layout was wrong in sound ioctl fallback (32-bit archs)

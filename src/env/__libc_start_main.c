@@ -28,7 +28,7 @@ void __init_libc(char **envp, char *pn)
 	libc.auxv = auxv = (void *)(envp+i+1);
 	for (i=0; auxv[i]; i+=2) if (auxv[i]<AUX_CNT) aux[auxv[i]] = auxv[i+1];
 	__hwcap = aux[AT_HWCAP];
-	__sysinfo = aux[AT_SYSINFO];
+	if (aux[AT_SYSINFO]) __sysinfo = aux[AT_SYSINFO];
 	libc.page_size = aux[AT_PAGESZ];
 
 	if (!pn) pn = (void*)aux[AT_EXECFN];
@@ -69,7 +69,8 @@ weak_alias(libc_start_init, __libc_start_init);
 typedef int lsm2_fn(int (*)(int,char **,char **), int, char **);
 static lsm2_fn libc_start_main_stage2;
 
-int __libc_start_main(int (*main)(int,char **,char **), int argc, char **argv)
+int __libc_start_main(int (*main)(int,char **,char **), int argc, char **argv,
+	void (*init_dummy)(), void(*fini_dummy)(), void(*ldso_dummy)())
 {
 	char **envp = argv+argc+1;
 

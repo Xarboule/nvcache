@@ -45,7 +45,7 @@ static void recover_nvlog(void);
 static void *disk_write_loop();
 static int nvlog_empty();
 static void reset_nvram();
-static void *memcpy_ntstore(void *_dest, void *_src, size_t n);
+static void *memcpy_ntstore(void *_dest, const void *_src, size_t n);
 static void *memcpy_ntstore32(void *_dst, void *_src, size_t n);
 static void memcpy_ntstore_nova(void *to, void *from);
 static void flush_with_clwb(volatile char *content, size_t count);
@@ -731,7 +731,7 @@ inline void ntstore(void* _dst, void* _src) {
 
 
 //-----------------------------------------------
-inline void *memcpy_ntstore(void *_dest, void *_src, size_t n){
+inline void *memcpy_ntstore(void *_dest, const void *_src, size_t n){
 
   unsigned long dst = (unsigned long) _dest;
   unsigned long src = (unsigned long) _src;

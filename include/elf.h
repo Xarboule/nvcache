@@ -385,7 +385,8 @@ typedef struct {
 #define SHT_PREINIT_ARRAY 16
 #define SHT_GROUP	  17
 #define SHT_SYMTAB_SHNDX  18
-#define	SHT_NUM		  19
+#define SHT_RELR	  19
+#define	SHT_NUM		  20
 #define SHT_LOOS	  0x60000000
 #define SHT_GNU_ATTRIBUTES 0x6ffffff5
 #define SHT_GNU_HASH	  0x6ffffff6
@@ -603,6 +604,7 @@ typedef struct {
 #define PT_GNU_EH_FRAME	0x6474e550
 #define PT_GNU_STACK	0x6474e551
 #define PT_GNU_RELRO	0x6474e552
+#define PT_GNU_PROPERTY	0x6474e553
 #define PT_LOSUNW	0x6ffffffa
 #define PT_SUNWBSS	0x6ffffffa
 #define PT_SUNWSTACK	0x6ffffffb
@@ -683,6 +685,10 @@ typedef struct {
 #define NT_ARM_SYSTEM_CALL	0x404
 #define NT_ARM_SVE	0x405
 #define NT_ARM_PAC_MASK	0x406
+#define NT_ARM_PACA_KEYS	0x407
+#define NT_ARM_PACG_KEYS	0x408
+#define NT_ARM_TAGGED_ADDR_CTRL	0x409
+#define NT_ARM_PAC_ENABLED_KEYS	0x40a
 #define NT_METAG_CBUF	0x500
 #define NT_METAG_RPIPE	0x501
 #define NT_METAG_TLS	0x502
@@ -749,7 +755,10 @@ typedef struct {
 #define DT_PREINIT_ARRAY 32
 #define DT_PREINIT_ARRAYSZ 33
 #define DT_SYMTAB_SHNDX	34
-#define	DT_NUM		35
+#define DT_RELRSZ	35
+#define DT_RELR		36
+#define DT_RELRENT	37
+#define	DT_NUM		38
 #define DT_LOOS		0x6000000d
 #define DT_HIOS		0x6ffff000
 #define DT_LOPROC	0x70000000
@@ -1083,6 +1092,7 @@ typedef struct {
 
 #define NT_GNU_BUILD_ID	3
 #define NT_GNU_GOLD_VERSION	4
+#define NT_GNU_PROPERTY_TYPE_0	5
 
 
 
@@ -3225,6 +3235,62 @@ enum
 
 #define R_BPF_NONE		0
 #define R_BPF_MAP_FD		1
+
+#define R_RISCV_NONE            0
+#define R_RISCV_32              1
+#define R_RISCV_64              2
+#define R_RISCV_RELATIVE        3
+#define R_RISCV_COPY            4
+#define R_RISCV_JUMP_SLOT       5
+#define R_RISCV_TLS_DTPMOD32    6
+#define R_RISCV_TLS_DTPMOD64    7
+#define R_RISCV_TLS_DTPREL32    8
+#define R_RISCV_TLS_DTPREL64    9
+#define R_RISCV_TLS_TPREL32     10
+#define R_RISCV_TLS_TPREL64     11
+
+#define R_RISCV_BRANCH          16
+#define R_RISCV_JAL             17
+#define R_RISCV_CALL            18
+#define R_RISCV_CALL_PLT        19
+#define R_RISCV_GOT_HI20        20
+#define R_RISCV_TLS_GOT_HI20    21
+#define R_RISCV_TLS_GD_HI20     22
+#define R_RISCV_PCREL_HI20      23
+#define R_RISCV_PCREL_LO12_I    24
+#define R_RISCV_PCREL_LO12_S    25
+#define R_RISCV_HI20            26
+#define R_RISCV_LO12_I          27
+#define R_RISCV_LO12_S          28
+#define R_RISCV_TPREL_HI20      29
+#define R_RISCV_TPREL_LO12_I    30
+#define R_RISCV_TPREL_LO12_S    31
+#define R_RISCV_TPREL_ADD       32
+#define R_RISCV_ADD8            33
+#define R_RISCV_ADD16           34
+#define R_RISCV_ADD32           35
+#define R_RISCV_ADD64           36
+#define R_RISCV_SUB8            37
+#define R_RISCV_SUB16           38
+#define R_RISCV_SUB32           39
+#define R_RISCV_SUB64           40
+#define R_RISCV_GNU_VTINHERIT   41
+#define R_RISCV_GNU_VTENTRY     42
+#define R_RISCV_ALIGN           43
+#define R_RISCV_RVC_BRANCH      44
+#define R_RISCV_RVC_JUMP        45
+#define R_RISCV_RVC_LUI         46
+#define R_RISCV_GPREL_I         47
+#define R_RISCV_GPREL_S         48
+#define R_RISCV_TPREL_I         49
+#define R_RISCV_TPREL_S         50
+#define R_RISCV_RELAX           51
+#define R_RISCV_SUB6            52
+#define R_RISCV_SET6            53
+#define R_RISCV_SET8            54
+#define R_RISCV_SET16           55
+#define R_RISCV_SET32           56
+#define R_RISCV_32_PCREL        57
 
 #ifdef __cplusplus
 }

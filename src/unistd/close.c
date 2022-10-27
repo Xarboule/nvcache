@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <errno.h>
+#include "aio_impl.h"
 #include "syscall.h"
 #include "../nvlogcache/nvcache_musl_wrapp.h"
 

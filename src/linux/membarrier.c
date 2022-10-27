@@ -9,13 +9,8 @@ static void dummy_0(void)
 {
 }
 
-static void dummy_1(pthread_t t)
-{
-}
-
 weak_alias(dummy_0, __tl_lock);
 weak_alias(dummy_0, __tl_unlock);
-weak_alias(dummy_1, __tl_sync);
 
 static sem_t barrier_sem;
 
@@ -40,7 +35,7 @@ int __membarrier(int cmd, int flags)
 		__tl_lock();
 		sem_init(&barrier_sem, 0, 0);
 		struct sigaction sa = {
-			.sa_flags = SA_RESTART,
+			.sa_flags = SA_RESTART | SA_ONSTACK,
 			.sa_handler = bcast_barrier
 		};
 		memset(&sa.sa_mask, -1, sizeof sa.sa_mask);

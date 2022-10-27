@@ -45,7 +45,7 @@ void __synccall(void (*func)(void *), void *ctx)
 {
 	sigset_t oldmask;
 	int cs, i, r;
-	struct sigaction sa = { .sa_flags = SA_RESTART, .sa_handler = handler };
+	struct sigaction sa = { .sa_flags = SA_RESTART | SA_ONSTACK, .sa_handler = handler };
 	pthread_t self = __pthread_self(), td;
 	int count = 0;
 
@@ -63,7 +63,8 @@ void __synccall(void (*func)(void *), void *ctx)
 	sem_init(&target_sem, 0, 0);
 	sem_init(&caller_sem, 0, 0);
 
-	if (!libc.threads_minus_1) goto single_threaded;
+	if (!libc.threads_minus_1 || __syscall(SYS_gettid) != self->tid)
+		goto single_threaded;
 
 	callback = func;
 	context = ctx;

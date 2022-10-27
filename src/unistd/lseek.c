@@ -2,7 +2,7 @@
 #include "syscall.h"
 #include "../nvlogcache/nvcache_musl_wrapp.h"
 
-off_t lseek(int fd, off_t offset, int whence)
+off_t __lseek(int fd, off_t offset, int whence)
 {
 #ifdef NVCACHE_BYPASS
     return musl_lseek(fd, offset, whence);
@@ -21,4 +21,4 @@ off_t musl_lseek(int fd, off_t offset, int whence)
 #endif
 }
 
-weak_alias(lseek, lseek64);
+weak_alias(__lseek, lseek);
